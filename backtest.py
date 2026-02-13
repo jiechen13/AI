@@ -1,102 +1,62 @@
 import numpy as np
-from engine import calculate_weights, generate_numbers, generate_second_zone
+from engine import generate_numbers, calculate_weights
 
 
-# ==============================
-# 建立群統計
-# ==============================
-
-def build_group_df(df_raw):
-
-    first_zone = df_raw.iloc[:, :-1]
-
-    return first_zone.apply(lambda row: {
-        "A": sum((row % 10).isin([0,2])),
-        "B": sum((row % 10).isin([4,5])),
-        "C": sum((row % 10).isin([6,8])),
-        "D": sum((row % 10).isin([1,7])),
-        "E": sum((row % 10).isin([3,9]))
-    }, axis=1, result_type="expand")
-
-
-# ==============================
-# 第一區回測（200次模擬）
-# ==============================
-
-def rolling_backtest(df_raw, mode="stable"):
-
-    if len(df_raw) < 50:
-        return 0,0,0,0
-
+# ===============================
+# 第一區回測
+# ===============================
+def rolling_backtest(df, mode="aggressive"):
     hits = []
-    total_sim = 0
-    total_hit2 = 0
-    total_hit3 = 0
+    hit2 = 0
+    hit3 = 0
 
-    for i in range(30, len(df_raw)-1):
+    for i in range(30, len(df)):
+        train = df.iloc[:i]
+        test = df.iloc[i]
 
-        train_raw = df_raw.iloc[:i]
-        test = df_raw.iloc[i]
+        weights = calculate_weights(train, mode=mode)
+        pred = generate_numbers(weights)
 
-        train_group = build_group_df(train_raw)
-        weights = calculate_weights(train_group, mode=mode)
+        actual = test[:6].tolist()
 
-        for _ in range(200):
+        h = len(set(pred) & set(actual))
+        hits.append(h)
 
-            prediction = generate_numbers(weights)
+        if h >= 2:
+            hit2 += 1
+        if h >= 3:
+            hit3 += 1
 
-            overlap = len(set(prediction) & set(test.iloc[:-1]))
-
-            hits.append(overlap)
-            total_sim += 1
-
-            if overlap >= 2:
-                total_hit2 += 1
-            if overlap >= 3:
-                total_hit3 += 1
-
-    if total_sim == 0:
-        return 0,0,0,0
-
-    model_avg = np.mean(hits)
+    avg_hit = np.mean(hits)
+    hit2_rate = hit2 / len(hits)
+    hit3_rate = hit3 / len(hits)
     std_dev = np.std(hits)
 
-    hit2_rate = total_hit2 / total_sim
-    hit3_rate = total_hit3 / total_sim
-
-    return round(model_avg,4), round(hit2_rate,4), round(hit3_rate,4), round(std_dev,4)
+    return avg_hit, hit2_rate, hit3_rate, std_dev
 
 
-# ==============================
-# 第二區回測（單次真實預測版）
-# ==============================
-
-def second_zone_backtest(df_raw, mode="stable"):
-
-    if len(df_raw) < 50:
-        return 0
-
-    hit = 0
+# ===============================
+# 第二區回測
+# ===============================
+def second_zone_backtest(df):
+    hits = 0
     total = 0
 
-    for i in range(30, len(df_raw)-1):
+    for i in range(30, len(df)):
+        train = df.iloc[:i]
+        test = df.iloc[i]
 
-        train = df_raw.iloc[:i]
+        from engine import generate_second
+        pred_second = generate_second(train)
 
-        # 正確取得第 i 期第二區（最後一欄）
-        actual_second = df_raw.iloc[i, -1]
-
-        # 每期只預測一次（真實策略）
-        pred_second = generate_second_zone(train, mode=mode)
+        actual_second = test["second"] if "second" in df.columns else 1
 
         if pred_second == actual_second:
-            hit += 1
+            hits += 1
 
         total += 1
 
     if total == 0:
         return 0
 
-    rate = hit / total
-
-    return round(rate,4)
+    return hits / total

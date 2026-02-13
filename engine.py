@@ -1,156 +1,110 @@
 import pandas as pd
 import numpy as np
+import os
 import random
 
+print("engine version v5 loaded")
 
-def load_data(path="data/history.csv"):
-    return pd.read_csv(path)
+# ===============================
+# 讀取資料（自動判斷 second 是否存在）
+# ===============================
+def load_data():
+    BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+    path = os.path.join(BASE_DIR, "data", "history.csv")
 
+    df = pd.read_csv(path)
 
-# ==============================
-# 群策略強化
-# ==============================
+    # 如果沒有 second 欄位，自動補 1
+    if "second" not in df.columns:
+        df["second"] = 1
 
-def apply_transition_boost(weights, df):
-    last_row = df.iloc[-1]
-
-    transition_map = {
-        "A": "B",
-        "B": "C",
-        "C": "A"
-    }
-
-    dominant_group = last_row.idxmax()
-
-    if dominant_group in transition_map:
-        target = transition_map[dominant_group]
-        weights[target] *= 1.25
-
-    return weights
+    return df
 
 
-def apply_cold_rebound(weights, df):
-    last3 = df.tail(3)
+# ===============================
+# 群判定
+# ===============================
+def classify_group(num):
+    tail = num % 10
 
-    for g in weights.keys():
-        if last3[g].mean() <= 1:
-            weights[g] *= 1.1
-
-    return weights
-
-
-def apply_overheat_suppression(weights, df):
-    last_row = df.iloc[-1]
-
-    for g in weights.keys():
-        if last_row[g] >= 3:
-            weights[g] *= 0.85
-
-    return weights
+    if tail in [0, 2]:
+        return "A"
+    elif tail in [4, 5]:
+        return "B"
+    elif tail in [6, 8]:
+        return "C"
+    elif tail in [1, 3]:
+        return "D"
+    else:
+        return "E"
 
 
-# ==============================
-# 計算群權重（雙模式）
-# ==============================
+# ===============================
+# 計算權重（支援 mode）
+# ===============================
+def calculate_weights(df, mode="aggressive"):
+    recent30 = df.tail(30)
+    recent10 = df.tail(10)
 
-def calculate_weights(df, mode="stable"):
-
-    last30 = df.tail(30)
-    last10 = df.tail(10)
-
+    groups = ["A", "B", "C", "D", "E"]
     weights = {}
 
-    for g in ["A","B","C","D","E"]:
+    for g in groups:
+        count30 = 0
+        count10 = 0
 
-        avg30 = last30[g].mean()
-        avg10 = last10[g].mean()
+        for _, row in recent30.iterrows():
+            nums = row[:6]
+            count30 += sum(1 for n in nums if classify_group(n) == g)
+
+        for _, row in recent10.iterrows():
+            nums = row[:6]
+            count10 += sum(1 for n in nums if classify_group(n) == g)
+
+        avg30 = count30 / (30 * 6)
+        avg10 = count10 / (10 * 6)
+
         momentum = avg10 - avg30
 
-        if mode == "stable":
-            weight = avg30*0.4 + avg10*0.4 + momentum*0.2
+        if mode == "aggressive":
+            weight = avg10 + momentum
         else:
-            weight = avg30*0.1 + avg10*0.7 + momentum*0.4
+            weight = avg30 * 0.7 + avg10 * 0.3
 
-        weights[g] = max(weight, 0.0001)
-
-    weights = apply_transition_boost(weights, df)
-    weights = apply_cold_rebound(weights, df)
-    weights = apply_overheat_suppression(weights, df)
+        weights[g] = max(weight, 0.01)
 
     total = sum(weights.values())
-    weights = {g: w/total for g,w in weights.items()}
+    for k in weights:
+        weights[k] /= total
 
     return weights
 
 
-# ==============================
-# 第一區生成
-# ==============================
-
+# ===============================
+# 產生號碼（無重複）
+# ===============================
 def generate_numbers(weights):
+    numbers = list(range(1, 39))
+    groups = [classify_group(n) for n in numbers]
 
-    groups = list(weights.keys())
-    probs = np.array(list(weights.values()))
-    probs = probs / probs.sum()
+    probs = [weights[g] for g in groups]
 
-    pool = {
-        "A":[2,10,12,20,22,30,32],
-        "B":[4,5,14,15,24,25,34,35],
-        "C":[6,8,16,18,26,28,36,38],
-        "D":[1,7,11,17,21,27,31,37],
-        "E":[3,9,13,19,23,29,33]
-    }
+    selected = set()
+    while len(selected) < 6:
+        selected.add(random.choices(numbers, probs)[0])
 
-    while True:
-
-        numbers = set()
-        used_groups = set()
-
-        while len(numbers) < 6:
-            g = np.random.choice(groups, p=probs)
-            n = random.choice(pool[g])
-            numbers.add(n)
-            used_groups.add(g)
-
-        numbers = sorted(numbers)
-
-        small = sum(1 for n in numbers if n <= 19)
-
-        if small != 3:
-            continue
-
-        if not (3 <= len(used_groups) <= 4):
-            continue
-
-        return numbers
+    return sorted(selected)
 
 
-# ==============================
-# 第二區生成
-# ==============================
+# ===============================
+# 第二區推薦
+# ===============================
+def generate_second(df):
+    recent20 = df.tail(20)
 
-def generate_second_zone(df_raw, mode="stable"):
+    counts = {}
+    for n in range(1, 9):
+        counts[n] = sum(recent20["second"] == n)
 
-    second_col = df_raw.columns[-1]
-
-    last20 = df_raw.tail(20)[second_col]
-    last5 = df_raw.tail(5)[second_col]
-
-    scores = {}
-
-    for num in range(1,9):
-
-        freq20 = sum(last20 == num)
-        freq5 = sum(last5 == num)
-
-        if mode == "stable":
-            score = freq20*0.6 + freq5*0.4
-        else:
-            score = freq20*0.4 + freq5*0.7
-
-        scores[num] = score + 0.01
-
-    total = sum(scores.values())
-    probs = [v/total for v in scores.values()]
-
-    return int(np.random.choice(list(scores.keys()), p=probs))
+    best = max(counts, key=counts.get)
+    return best
