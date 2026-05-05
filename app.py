@@ -1,153 +1,74 @@
-from flask import Flask, render_template_string
+import streamlit as st
+import yfinance as yf
 import pandas as pd
-import os
-import random
 
-app = Flask(__name__)
+# 1. 基礎設定
+st.set_page_config(page_title="黑馬戰鬥機-5萬獲利版", layout="wide")
 
-# ===============================
-# 讀取資料（極簡）
-# ===============================
-def load_data():
-    BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-    path = os.path.join(BASE_DIR, "data", "history.csv")
+# 2. 核心 50 檔標的池 (初始名單)
+if 'stock_pool' not in st.session_state:
+    st.session_state.stock_pool = {
+        "2603": "長榮", "2609": "陽明", "2303": "聯電", "3037": "欣興", "00922": "國泰領袖50",
+        "2330": "台積電", "2317": "鴻海", "2382": "廣達", "3231": "緯創", "2454": "聯發科",
+        "2615": "萬海", "2618": "長榮航", "2409": "友達", "3481": "群創", "2881": "富邦金"
+        # 這裡可以持續增加到 50 檔...
+    }
 
-    df = pd.read_csv(path)
+# --- 戰情室標題 ---
+st.title("🚀 5萬獲利進度戰情室")
 
-    # 如果沒有 second 欄位，自動補
-    if "second" not in df.columns:
-        df["second"] = 1
+# --- 新增功能：顯示並管理標的池 ---
+with st.expander("📂 管理監控清單 (目前共有 " + str(len(st.session_state.stock_pool)) + " 檔)"):
+    # 顯示目前清單
+    st.write("目前監控中：", ", ".join([f"{k} {v}" for k, v in st.session_state.stock_pool.items()]))
+    
+    st.divider()
+    col_add1, col_add2, col_add3 = st.columns([1, 1, 1])
+    new_id = col_add1.text_input("輸入代碼 (例: 6239)")
+    new_nm = col_add2.text_input("輸入名稱 (例: 力成)")
+    if col_add3.button("➕ 新增至清單"):
+        if new_id and new_nm:
+            st.session_state.stock_pool[new_id] = new_nm
+            st.success(f"已加入 {new_nm}")
+            st.rerun()
 
-    return df
+# --- 分頁功能 ---
+tab1, tab2 = st.tabs(["🔥 黑馬診斷", "🌙 一夜持股"])
 
+with tab1:
+    if st.button("🔄 執行黑馬全掃描", use_container_width=True):
+        pool = st.session_state.stock_pool
+        sids = [f"{s}.TW" for s in pool.keys()]
+        bh_results = []
+        
+        with st.spinner("正在掃描全台黑馬..."):
+            # 使用批次下載提升速度
+            data = yf.download(sids, period="1mo", progress=False, auto_adjust=True)
+            close_data = data['Close'] if isinstance(data.columns, pd.MultiIndex) else data[['Close']]
+            
+            for sid_tw in sids:
+                sid = sid_tw.replace(".TW", "")
+                # 5 日線判斷邏輯
+                history = close_data[sid_tw].dropna()
+                if history.empty: continue
+                
+                curr_p = float(history.iloc[-1])
+                ma5 = float(history.rolling(5).mean().iloc[-1])
+                
+                # 判定狀態
+                status = "🟢 強勢持有" if curr_p >= ma5 else "🚨 轉弱出場"
+                # 計算建議股數 (以 1.5 萬為基準)
+                shares = int(15000 / curr_p) if status == "🟢 強勢持有" else 0
+                
+                bh_results.append({
+                    "股票": f"{sid} {pool[sid]}",
+                    "現價": round(curr_p, 1),
+                    "狀態": status,
+                    "建議買進(股)": shares,
+                    "預計投入": int(shares * curr_p)
+                })
+        
+        st.dataframe(pd.DataFrame(bh_results), use_container_width=True, hide_index=True)
 
-# ===============================
-# 群分類
-# ===============================
-def classify_group(num):
-    tail = num % 10
-
-    if tail in [0, 2]:
-        return "A"
-    elif tail in [4, 5]:
-        return "B"
-    elif tail in [6, 8]:
-        return "C"
-    elif tail in [1, 3]:
-        return "D"
-    else:
-        return "E"
-
-
-# ===============================
-# 計算簡化權重（只看近20期）
-# ===============================
-def calculate_weights(df):
-
-    recent = df.tail(20)
-
-    groups = ["A", "B", "C", "D", "E"]
-    weights = {}
-
-    for g in groups:
-        count = 0
-        for _, row in recent.iterrows():
-            nums = row.iloc[:6]
-            count += sum(1 for n in nums if classify_group(n) == g)
-
-        weights[g] = count + 1  # 防止0
-
-    total = sum(weights.values())
-    for k in weights:
-        weights[k] /= total
-
-    return weights
-
-
-# ===============================
-# 產生號碼（無重複）
-# ===============================
-def generate_numbers(weights):
-
-    numbers = list(range(1, 39))
-    groups = [classify_group(n) for n in numbers]
-    probs = [weights[g] for g in groups]
-
-    selected = set()
-
-    while len(selected) < 6:
-        selected.add(random.choices(numbers, probs)[0])
-
-    return sorted(selected)
-
-
-# ===============================
-# HTML（極簡手機版）
-# ===============================
-HTML = """
-<!DOCTYPE html>
-<html>
-<head>
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<style>
-body {
-    font-family: -apple-system;
-    background: #f4f6f9;
-    padding: 15px;
-}
-.card {
-    background: white;
-    padding: 15px;
-    border-radius: 12px;
-    margin-bottom: 15px;
-}
-button {
-    width: 100%;
-    padding: 12px;
-    border: none;
-    background: #007aff;
-    color: white;
-    border-radius: 8px;
-    font-size: 16px;
-}
-</style>
-</head>
-<body>
-
-<h2>AI選號系統 Free 穩定版</h2>
-
-<div class="card">
-<h3>群權重</h3>
-<ul>
-{% for g,w in weights.items() %}
-<li>{{g}} : {{w}}</li>
-{% endfor %}
-</ul>
-</div>
-
-<div class="card">
-<h3>建議號碼</h3>
-<p>{{numbers}}</p>
-</div>
-
-</body>
-</html>
-"""
-
-
-@app.route("/")
-def index():
-
-    df = load_data()
-    weights = calculate_weights(df)
-    numbers = generate_numbers(weights)
-
-    return render_template_string(
-        HTML,
-        weights=weights,
-        numbers=numbers
-    )
-
-
-if __name__ == "__main__":
-    app.run()
+with tab2:
+    st.write("（此處保留原本的一夜持股邏輯...）")
